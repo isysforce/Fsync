@@ -1,0 +1,7 @@
+{
+    "board": "arduino:avr:mega",
+    "configuration": "cpu=atmega2560",
+    "port": "COM10",
+    "sketch": "Fsync.ino",
+    "programmer": "AVRISP mkII"
+}
