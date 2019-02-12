@@ -1,25 +1,15 @@
 #include <Adafruit_NeoPixel.h>
-
+#include <EEPROM.h>
 
 #define MESSAGE_MAGIC 0xBEEF
 #define STRIP_COUNT 3
+#define SAVE_CONFIG_EVERY_SECS 60
 
 Adafruit_NeoPixel strips[STRIP_COUNT] = {
     Adafruit_NeoPixel(16, 6, NEO_GRB + NEO_KHZ800),
     Adafruit_NeoPixel(12, 7, NEO_GRB + NEO_KHZ800),
     Adafruit_NeoPixel(4, 8, NEO_GRB + NEO_KHZ800)
 };
-
-
-void setAllStrips(byte r, byte g, byte b){
-    for (uint8_t stripIndex=0; stripIndex < sizeof(strips); stripIndex++){
-        for (uint16_t i = 0; i < strips[stripIndex].numPixels(); i++)
-        {
-            strips[stripIndex].setPixelColor(i, r, g, b);
-        }
-        strips[stripIndex].show();
-    }
-}
 
 enum Command_t : uint8_t
 {
@@ -33,6 +23,8 @@ enum Command_t : uint8_t
     ClearColor
 };
 
+
+
 struct Color_t
 {
     uint8_t R;
@@ -44,10 +36,298 @@ struct Message_t
 {
     uint16_t Magic;
     Command_t Command;
+    uint16_t Zone;
     uint16_t Parameter0;
     uint16_t Parameter1;
     Color_t Color;
 } msgIn, msgOut;
+
+
+
+struct StoreStruct
+{
+    uint32_t StaticColor;
+    bool StaticActivate;
+
+    uint32_t TheaterChaseColor;
+    uint16_t TheaterChaseWait;
+    bool TheaterChaseRainbow;
+    bool TheaterChaseActivate;
+
+    uint16_t RainbowWait;
+    bool RainbowCycle;
+    bool RainbowActivate;
+
+    uint32_t WipeColor;
+    uint16_t WipeWait;
+    bool WipeActivate;
+};
+StoreStruct stripConfig[STRIP_COUNT];
+
+void setup()
+{
+    msgOut.Magic = MESSAGE_MAGIC;
+    Serial.begin(9600);
+    Serial.println("Hello");
+    uint16_t eeAddress = 0;
+
+    for (uint8_t stripIndex = 0; stripIndex < STRIP_COUNT; stripIndex++)
+    {
+        EEPROM.get(eeAddress, stripConfig[stripIndex]);
+        eeAddress += sizeof(StoreStruct);
+
+        // Serial.print("Strip: ");
+        // Serial.println(stripIndex);
+        // Serial.print("StaticColor: ");
+        // Serial.println(stripConfig[stripIndex].StaticColor, HEX);
+        // Serial.println("--------------------");
+    }
+
+    for(uint8_t stripIndex = 0; stripIndex < STRIP_COUNT; stripIndex++){
+        strips[stripIndex].begin();
+        strips[stripIndex].show();
+    }
+}
+
+bool configChanged;
+unsigned long saveConfigMillis;
+
+unsigned long theaterChaseMillis[STRIP_COUNT];
+unsigned long colorWipeMillis[STRIP_COUNT];
+unsigned long rainbowMillis[STRIP_COUNT];
+unsigned long wipeMillis[STRIP_COUNT];
+
+uint16_t theaterChaseCounter[STRIP_COUNT];
+uint16_t theaterChaseRainbowCycleCounter[STRIP_COUNT];
+uint16_t rainbowCounter[STRIP_COUNT];
+uint16_t wipeCounter[STRIP_COUNT];
+
+void loop()
+{
+    if (MessageReady())
+    {
+        ReadMessage();
+        if (msgIn.Magic == MESSAGE_MAGIC)
+        {
+            switch (msgIn.Command)
+            {
+            case Command_t::Ping:
+                msgOut.Command = Command_t::Pong;
+                break;
+            case Command_t::SetColor:
+
+                if (msgIn.Zone > 0 && msgIn.Zone <= STRIP_COUNT)
+                {
+                    strips[msgIn.Zone - 1].setPixelColor(msgIn.Parameter0, msgIn.Color.R, msgIn.Color.G, msgIn.Color.B);
+                    strips[msgIn.Zone - 1].show();
+                }
+                msgOut.Command = Command_t::SetColor;
+                break;
+            case Command_t::SetColorAll:
+                if (msgIn.Zone > 0 && msgIn.Zone <= STRIP_COUNT)
+                {
+                    for (uint16_t i = 0; i < strips[msgIn.Zone - 1].numPixels(); i++)
+                        strips[msgIn.Zone - 1].setPixelColor(i, msgIn.Color.R, msgIn.Color.G, msgIn.Color.B);
+                    strips[msgIn.Zone - 1].show();
+                }
+                msgOut.Command = Command_t::SetColor;
+                break;
+            case Command_t::SetMode:
+                uint8_t mode = (msgIn.Parameter1 >> 8) & 0xff;
+                uint8_t param1 = msgIn.Parameter1 & 0xff;
+                switch(mode){
+                    case 1:
+                        if (msgIn.Zone > 0 && msgIn.Zone <= STRIP_COUNT)
+                        {
+
+                            stripConfig[msgIn.Zone - 1].StaticActivate = true;
+                            stripConfig[msgIn.Zone - 1].TheaterChaseActivate = false;
+                            stripConfig[msgIn.Zone - 1].RainbowActivate = false;
+                            stripConfig[msgIn.Zone - 1].WipeActivate = false;
+
+                            stripConfig[msgIn.Zone - 1].StaticColor = Color(msgIn.Color.R, msgIn.Color.G, msgIn.Color.B);
+
+                            for (uint16_t i = 0; i < strips[msgIn.Zone - 1].numPixels(); i++){
+                                strips[msgIn.Zone - 1].setPixelColor(i, stripConfig[msgIn.Zone - 1].StaticColor);
+                            }
+                            strips[msgIn.Zone - 1].show();
+                            configChanged = true;
+                        }
+                        break;
+                    case 2: //Theater chase
+                        if (msgIn.Zone > 0 && msgIn.Zone <= STRIP_COUNT)
+                        {
+                            stripConfig[msgIn.Zone - 1].StaticActivate = false;
+                            stripConfig[msgIn.Zone - 1].TheaterChaseActivate = true;
+                            stripConfig[msgIn.Zone - 1].RainbowActivate = false;
+                            stripConfig[msgIn.Zone - 1].WipeActivate = false;
+
+                            stripConfig[msgIn.Zone - 1].TheaterChaseColor = Color(msgIn.Color.R, msgIn.Color.G, msgIn.Color.B);
+                            stripConfig[msgIn.Zone - 1].TheaterChaseWait = msgIn.Parameter0;
+                            stripConfig[msgIn.Zone - 1].TheaterChaseRainbow = ((param1 & 0x1) == 0x1);
+                            configChanged = true;
+                        }
+                        break;
+                    case 3: //rainbow
+                        if (msgIn.Zone > 0 && msgIn.Zone <= STRIP_COUNT)
+                        {
+                            stripConfig[msgIn.Zone - 1].StaticActivate = false;
+                            stripConfig[msgIn.Zone - 1].TheaterChaseActivate = false;
+                            stripConfig[msgIn.Zone - 1].RainbowActivate = true;
+                            stripConfig[msgIn.Zone - 1].WipeActivate = false;
+
+                            stripConfig[msgIn.Zone - 1].RainbowWait = msgIn.Parameter0;
+                            stripConfig[msgIn.Zone - 1].RainbowCycle = ((param1 & 0x1) == 0x1);
+                            configChanged = true;
+                        }
+                        break;
+                    case 4:
+                        if (msgIn.Zone > 0 && msgIn.Zone <= STRIP_COUNT)
+                        {
+                            stripConfig[msgIn.Zone - 1].StaticActivate = false;
+                            stripConfig[msgIn.Zone - 1].TheaterChaseActivate = false;
+                            stripConfig[msgIn.Zone - 1].RainbowActivate = false;
+                            stripConfig[msgIn.Zone - 1].WipeActivate = true;
+
+                            stripConfig[msgIn.Zone - 1].WipeColor = Color(msgIn.Color.R, msgIn.Color.G, msgIn.Color.B);
+                            stripConfig[msgIn.Zone - 1].WipeWait = msgIn.Parameter0;
+                            configChanged = true;
+                        }
+                        break;
+                }
+                break;
+            case Command_t::ClearColor:
+                if (msgIn.Zone > 0 && msgIn.Zone <= STRIP_COUNT)
+                {
+                    stripConfig[msgIn.Zone - 1].StaticActivate = false;
+                    stripConfig[msgIn.Zone - 1].TheaterChaseActivate = false;
+                    stripConfig[msgIn.Zone - 1].RainbowActivate = false;
+                    stripConfig[msgIn.Zone - 1].WipeActivate = false;
+                    setAllStrips(0, 0, 0);
+                    configChanged = true;
+                }
+                break;
+            default:
+                msgOut.Command = Command_t::InvalidRequest;
+                break;
+            }
+        }
+        else
+        {
+            ClearSerial();
+            msgOut.Command = Command_t::InvalidMessage;
+        }
+        SendMessage();
+    }
+
+    for (uint8_t stripIndex = 0; stripIndex < STRIP_COUNT; stripIndex++)
+    {
+        if (stripConfig[stripIndex].TheaterChaseActivate && millis() - theaterChaseMillis[stripIndex] >= stripConfig[stripIndex].TheaterChaseWait)
+        {
+            theaterChaseMillis[stripIndex] = millis();
+            theaterChase(strips[stripIndex], theaterChaseCounter[stripIndex], theaterChaseRainbowCycleCounter[stripIndex], stripConfig[stripIndex].TheaterChaseColor, stripConfig[stripIndex].TheaterChaseRainbow);
+        }
+        else if (stripConfig[stripIndex].RainbowActivate && millis() - rainbowMillis[stripIndex] >= stripConfig[stripIndex].RainbowWait)
+        {
+            rainbowMillis[stripIndex] = millis();
+            rainbow(strips[stripIndex], rainbowCounter[stripIndex], stripConfig[stripIndex].RainbowCycle);
+        }
+        else if (stripConfig[stripIndex].WipeActivate && millis() - wipeMillis[stripIndex] >= stripConfig[stripIndex].WipeWait)
+        {
+            wipeMillis[stripIndex] = millis();
+            colorWipe(strips[stripIndex], wipeCounter[stripIndex], stripConfig[stripIndex].WipeColor);
+        }
+    }
+
+    if (configChanged && millis() - saveConfigMillis >= SAVE_CONFIG_EVERY_SECS){
+        saveConfigMillis = millis();
+        configChanged = false;
+
+        uint16_t eeAddress = 0;
+        for (uint8_t stripIndex = 0; stripIndex < STRIP_COUNT; stripIndex++)
+        {
+            EEPROM.put(eeAddress, stripConfig[stripIndex]);
+            eeAddress += sizeof(StoreStruct);
+        }
+    }
+}
+
+void theaterChase(Adafruit_NeoPixel &_strip, uint16_t &_theaterChaseCounter, uint16_t &_theaterChaseRainbowCycleCounter, uint32_t color, bool rainbow)
+{
+    if (rainbow){
+        for (uint16_t i = 0; i < _strip.numPixels(); i = i + 3)
+        {
+            _strip.setPixelColor(i + _theaterChaseCounter, Wheel((i + _theaterChaseRainbowCycleCounter) % 255)); //turn every third pixel on
+        }
+    } else {
+        for (uint16_t i = 0; i < _strip.numPixels(); i = i + 3)
+        {
+            _strip.setPixelColor(i + _theaterChaseCounter, color);
+        }
+    }
+    
+    _strip.show();
+    for (uint16_t i = 0; i < _strip.numPixels(); i = i + 3)
+    {
+        _strip.setPixelColor(i + _theaterChaseCounter, 0);
+    }
+
+    _theaterChaseCounter++;
+    _theaterChaseRainbowCycleCounter++;
+    if (_theaterChaseCounter >= 3)
+        _theaterChaseCounter = 0;
+    if (_theaterChaseRainbowCycleCounter >= 256)
+        _theaterChaseRainbowCycleCounter = 0;
+}
+
+
+void rainbow(Adafruit_NeoPixel &_strip, uint16_t &_rainbowCounter, bool cycle)
+{
+    if (cycle){
+        for (uint16_t i = 0; i < _strip.numPixels(); i++)
+        {
+            _strip.setPixelColor(i, Wheel(((i * 256 / _strip.numPixels()) + _rainbowCounter) & 255));
+        }
+    } else {
+        for (uint16_t i = 0; i < _strip.numPixels(); i++)
+        {
+            _strip.setPixelColor(i, Wheel((i + _rainbowCounter) & 255));
+        }
+    }
+    
+    _strip.show();
+
+    _rainbowCounter++;
+    if (cycle){
+        if (_rainbowCounter >= 256 * 5)
+            _rainbowCounter = 0;
+    } else {
+        if (_rainbowCounter >= 256)
+            _rainbowCounter = 0;
+    }
+}
+
+void colorWipe(Adafruit_NeoPixel &_strip, uint16_t &colowWipeCounter, uint32_t color)
+{
+    _strip.setPixelColor(colowWipeCounter, color);
+    _strip.show();
+    _strip.setPixelColor(colowWipeCounter, 0);
+    colowWipeCounter++;
+    if (colowWipeCounter == _strip.numPixels())
+        colowWipeCounter = 0;
+}
+
+void setAllStrips(byte r, byte g, byte b)
+{
+    for (uint8_t stripIndex = 0; stripIndex < sizeof(strips); stripIndex++)
+    {
+        for (uint16_t i = 0; i < strips[stripIndex].numPixels(); i++)
+        {
+            strips[stripIndex].setPixelColor(i, r, g, b);
+        }
+        strips[stripIndex].show();
+    }
+}
 
 bool MessageReady()
 {
@@ -77,294 +357,6 @@ void ClearSerial()
         Serial.read();
 }
 
-void setup()
-{
-    msgOut.Magic = MESSAGE_MAGIC;
-    Serial.begin(9600);
-    
-    for(uint8_t stripIndex = 0; stripIndex < STRIP_COUNT; stripIndex++){
-        strips[stripIndex].begin();
-        strips[stripIndex].show();
-    }
-
-}
-
-unsigned long theaterChaseMillis[STRIP_COUNT];
-unsigned long theaterChaseRainbowMillis[STRIP_COUNT];
-unsigned long colorWipeMillis[STRIP_COUNT];
-unsigned long rainbowMillis[STRIP_COUNT];
-unsigned long rainbowCycleMillis[STRIP_COUNT];
-unsigned long wipeMillis[STRIP_COUNT];
-// Adafruit_NeoPixel theaterChaseStrips[STRIP_COUNT] = {strip, strip1};
-uint32_t theaterChaseColor[STRIP_COUNT];
-bool theaterChaseActivated[STRIP_COUNT];
-uint16_t theaterChaseWait[STRIP_COUNT];
-uint16_t theaterChaseCounter[STRIP_COUNT];
-
-bool theaterChaseRainbowActivated[STRIP_COUNT];
-uint16_t theaterChaseRainbowWait[STRIP_COUNT];
-uint16_t theaterChaseRainbowCounter[STRIP_COUNT];
-uint16_t theaterChaseRainbowCycleCounter[STRIP_COUNT];
-
-bool rainbowActivated[STRIP_COUNT];
-uint16_t rainbowWait[STRIP_COUNT];
-uint16_t rainbowCounter[STRIP_COUNT];
-
-bool rainbowCycleActivated[STRIP_COUNT];
-uint16_t rainbowCycleWait[STRIP_COUNT];
-uint16_t rainbowCycleCounter[STRIP_COUNT];
-
-uint32_t wipeColor[STRIP_COUNT];
-bool wipeActivated[STRIP_COUNT];
-uint16_t wipeWait[STRIP_COUNT];
-uint16_t wipeCounter[STRIP_COUNT];
-
-void loop()
-{
-    if (MessageReady())
-    {
-        ReadMessage();
-        if (msgIn.Magic == MESSAGE_MAGIC)
-        {
-            uint16_t param0 = msgIn.Parameter0; //65535 max
-            uint8_t zone = (msgIn.Parameter1 >> 8) & 0xff; //255 max
-            uint8_t mode = msgIn.Parameter1 & 0xff;        //255 max
-            switch (msgIn.Command)
-            {
-            case Command_t::Ping:
-                msgOut.Command = Command_t::Pong;
-                break;
-            case Command_t::SetColor:
-
-                if (zone > 0 && zone <= STRIP_COUNT)
-                {
-                    strips[zone - 1].setPixelColor(param0, msgIn.Color.R, msgIn.Color.G, msgIn.Color.B);
-                    strips[zone - 1].show();
-                }
-                msgOut.Command = Command_t::SetColor;
-                break;
-            case Command_t::SetColorAll:
-                if (zone > 0 && zone <= STRIP_COUNT)
-                {
-                    for (uint16_t i = 0; i < strips[zone - 1].numPixels(); i++)
-                        strips[zone - 1].setPixelColor(i, msgIn.Color.R, msgIn.Color.G, msgIn.Color.B);
-                    strips[zone - 1].show();
-                }
-                msgOut.Command = Command_t::SetColor;
-                break;
-            case Command_t::SetMode:
-                switch(mode){
-                    case 1:
-                        if (zone > 0 && zone <= STRIP_COUNT)
-                        {
-                            theaterChaseActivated[zone - 1] = false;
-                            theaterChaseRainbowActivated[zone - 1] = false;
-                            rainbowActivated[zone - 1] = false;
-                            rainbowCycleActivated[zone - 1] = false;
-                            wipeActivated[zone - 1] = false;
-
-                            for (uint16_t i = 0; i < strips[zone - 1].numPixels(); i++){
-                                strips[zone - 1].setPixelColor(i, msgIn.Color.R, msgIn.Color.G, msgIn.Color.B);
-                            }
-                            strips[zone - 1].show();
-                        }
-                        break;
-                    case 2: //Theater chase
-                        if (zone > 0 && zone <= STRIP_COUNT)
-                        {
-                            theaterChaseActivated[zone - 1] = true;
-                            theaterChaseRainbowActivated[zone - 1] = false;
-                            rainbowActivated[zone - 1] = false;
-                            rainbowCycleActivated[zone - 1] = false;
-                            wipeActivated[zone - 1] = false;
-
-                            theaterChaseWait[zone - 1] = param0;
-                            theaterChaseColor[zone - 1] = Color(msgIn.Color.R, msgIn.Color.G, msgIn.Color.B); //((uint32_t)msgIn.Color.R << 16 | (uint32_t)msgIn.Color.G << 8 | msgIn.Color.B);
-                        }
-                        break;
-                    case 3: //Theater chase rainbow
-                        if (zone > 0 && zone <= STRIP_COUNT)
-                        {
-                            theaterChaseActivated[zone - 1] = false;
-                            theaterChaseRainbowActivated[zone - 1] = true;
-                            rainbowActivated[zone - 1] = false;
-                            rainbowCycleActivated[zone - 1] = false;
-                            wipeActivated[zone - 1] = false;
-
-                            theaterChaseRainbowWait[zone - 1] = param0;
-                        }
-                        break;
-                    case 4: //rainbow
-                        if (zone > 0 && zone <= STRIP_COUNT)
-                        {
-                            theaterChaseActivated[zone - 1] = false;
-                            theaterChaseRainbowActivated[zone - 1] = false;
-                            rainbowActivated[zone - 1] = true;
-                            rainbowCycleActivated[zone - 1] = false;
-                            wipeActivated[zone - 1] = false;
-
-                            rainbowWait[zone - 1] = param0;
-
-                        }
-                        break;
-                    case 5:
-                        theaterChaseActivated[zone - 1] = false;
-                        theaterChaseRainbowActivated[zone - 1] = false;
-                        rainbowActivated[zone - 1] = false;
-                        rainbowCycleActivated[zone - 1] = true;
-                        wipeActivated[zone - 1] = false;
-
-                        rainbowCycleWait[zone - 1] = param0;
-                        break;
-                    case 6:
-                        theaterChaseActivated[zone - 1] = false;
-                        theaterChaseRainbowActivated[zone - 1] = false;
-                        rainbowActivated[zone - 1] = false;
-                        rainbowCycleActivated[zone - 1] = false;
-                        wipeActivated[zone - 1] = true;
-
-                        wipeWait[zone - 1] = param0;
-                        wipeColor[zone - 1] = Color(msgIn.Color.R, msgIn.Color.G, msgIn.Color.B);
-                        break;
-                }
-                break;
-            case Command_t::ClearColor:
-                setAllStrips(0, 0, 0);
-                break;
-            default:
-                msgOut.Command = Command_t::InvalidRequest;
-                break;
-            }
-        }
-        else
-        {
-            ClearSerial();
-            msgOut.Command = Command_t::InvalidMessage;
-        }
-        SendMessage();
-    }
-
-    for (uint8_t stripIndex = 0; stripIndex < STRIP_COUNT; stripIndex++)
-    {
-        if (theaterChaseActivated[stripIndex] && millis() - theaterChaseMillis[stripIndex] >= theaterChaseWait[stripIndex])
-        {
-            theaterChaseMillis[stripIndex] = millis();
-
-            theaterChase(theaterChaseColor[stripIndex], strips[stripIndex], theaterChaseCounter[stripIndex]);
-        }
-
-        if (theaterChaseRainbowActivated[stripIndex] && millis() - theaterChaseRainbowMillis[stripIndex] >= theaterChaseRainbowWait[stripIndex])
-        {
-            theaterChaseRainbowMillis[stripIndex] = millis();
-
-            theaterChaseRainbow(strips[stripIndex], theaterChaseRainbowCounter[stripIndex], theaterChaseRainbowCycleCounter[stripIndex]);
-        }
-
-        if (rainbowActivated[stripIndex] && millis() - rainbowMillis[stripIndex] >= rainbowWait[stripIndex])
-        {
-            rainbowMillis[stripIndex] = millis();
-
-            rainbow(strips[stripIndex], rainbowCounter[stripIndex]);
-        }
-
-        if (rainbowCycleActivated[stripIndex] && millis() - rainbowCycleMillis[stripIndex] >= rainbowCycleWait[stripIndex])
-        {
-            rainbowCycleMillis[stripIndex] = millis();
-
-            rainbowCycle(strips[stripIndex], rainbowCycleCounter[stripIndex]);
-        }
-
-        if (wipeActivated[stripIndex] && millis() - wipeMillis[stripIndex] >= wipeWait[stripIndex])
-        {
-            wipeMillis[stripIndex] = millis();
-
-            colorWipe(wipeColor[stripIndex], strips[stripIndex], wipeCounter[stripIndex]);
-        }
-    }
-}
-
-
-void theaterChase(uint32_t &color, Adafruit_NeoPixel &_strip, uint16_t &_theaterChaseCounter)
-{
-    for (uint16_t i = 0; i < _strip.numPixels(); i = i + 3)
-    {
-        _strip.setPixelColor(i + _theaterChaseCounter, color);
-    }
-    _strip.show();
-    for (uint16_t i = 0; i < _strip.numPixels(); i = i + 3)
-    {
-        _strip.setPixelColor(i + _theaterChaseCounter, 0);
-    }
-
-    _theaterChaseCounter++;
-    if (_theaterChaseCounter >= 3)
-        _theaterChaseCounter = 0;
-}
-
-
-
-void theaterChaseRainbow(Adafruit_NeoPixel &_strip, uint16_t &_theaterChaseRainbowCounter, uint16_t &_theaterChaseRainbowCycleCounter)
-{
-    for (uint16_t i = 0; i < _strip.numPixels(); i = i + 3)
-    {
-        _strip.setPixelColor(i + _theaterChaseRainbowCounter, Wheel((i + _theaterChaseRainbowCycleCounter) % 255)); //turn every third pixel on
-    }
-
-    _strip.show();
-    for (uint16_t i = 0; i < _strip.numPixels(); i = i + 3)
-    {
-        _strip.setPixelColor(i + _theaterChaseRainbowCounter, 0); //turn every third pixel off
-    }
-    _theaterChaseRainbowCounter++;
-    _theaterChaseRainbowCycleCounter++;
-    if (_theaterChaseRainbowCounter >= 3)
-        _theaterChaseRainbowCounter = 0;
-    if (_theaterChaseRainbowCycleCounter >= 256)
-        _theaterChaseRainbowCycleCounter = 0;
-
-}
-
-
-void colorWipe(uint32_t &color, Adafruit_NeoPixel &_strip, uint16_t &colowWipeCounter)
-{
-    _strip.setPixelColor(colowWipeCounter, color);
-    _strip.show();
-     _strip.setPixelColor(colowWipeCounter, 0);
-    colowWipeCounter++;
-    if (colowWipeCounter == _strip.numPixels())
-        colowWipeCounter = 0;
-}
-
-
-
-void rainbow(Adafruit_NeoPixel &_strip, uint16_t &rainbowCounter)
-{
-    for (uint16_t i = 0; i < _strip.numPixels(); i++)
-    {
-        _strip.setPixelColor(i, Wheel((i + rainbowCounter) & 255));
-    }
-    _strip.show();
-
-    rainbowCounter++;
-    if (rainbowCounter >= 256)
-        rainbowCounter = 0;
-}
-
-
-void rainbowCycle(Adafruit_NeoPixel &_strip, uint16_t &_rainbowCycleCounter)
-{
-    for (uint16_t i = 0; i < _strip.numPixels(); i++)
-    {
-        _strip.setPixelColor(i, Wheel(((i * 256 / _strip.numPixels()) + _rainbowCycleCounter) & 255));
-    }
-    _strip.show();
-
-    _rainbowCycleCounter++;
-    if (_rainbowCycleCounter >= 256 * 5)
-        _rainbowCycleCounter = 0;
-
-}
-
 uint32_t Color(uint8_t r, uint8_t g, uint8_t b)
 {
     return ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
@@ -385,3 +377,4 @@ uint32_t Wheel(byte WheelPos)
     WheelPos -= 170;
     return Color(WheelPos * 3, 255 - WheelPos * 3, 0);
 }
+
