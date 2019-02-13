@@ -4,6 +4,7 @@
 #define MESSAGE_MAGIC 0xBEEF
 #define STRIP_COUNT 3
 #define SAVE_CONFIG_EVERY_SECS 60
+#define audioPin A1
 
 Adafruit_NeoPixel strips[STRIP_COUNT] = {
     Adafruit_NeoPixel(16, 6, NEO_GRB + NEO_KHZ800),
@@ -22,8 +23,6 @@ enum Command_t : uint8_t
     SetMode,
     ClearColor
 };
-
-
 
 struct Color_t
 {
@@ -61,11 +60,16 @@ struct StoreStruct
     uint32_t WipeColor;
     uint16_t WipeWait;
     bool WipeActivate;
+
+    bool AudioVisActivate;
 };
 StoreStruct stripConfig[STRIP_COUNT];
 
+int audioCounters[STRIP_COUNT];
+
 void setup()
 {
+    pinMode(audioPin, INPUT);
     msgOut.Magic = MESSAGE_MAGIC;
     Serial.begin(9600);
     Serial.println("Hello");
@@ -75,17 +79,12 @@ void setup()
     {
         EEPROM.get(eeAddress, stripConfig[stripIndex]);
         eeAddress += sizeof(StoreStruct);
-
-        // Serial.print("Strip: ");
-        // Serial.println(stripIndex);
-        // Serial.print("StaticColor: ");
-        // Serial.println(stripConfig[stripIndex].StaticColor, HEX);
-        // Serial.println("--------------------");
     }
 
     for(uint8_t stripIndex = 0; stripIndex < STRIP_COUNT; stripIndex++){
         strips[stripIndex].begin();
         strips[stripIndex].show();
+        audioCounters[stripIndex] = 255;
     }
 }
 
@@ -101,6 +100,10 @@ uint16_t theaterChaseCounter[STRIP_COUNT];
 uint16_t theaterChaseRainbowCycleCounter[STRIP_COUNT];
 uint16_t rainbowCounter[STRIP_COUNT];
 uint16_t wipeCounter[STRIP_COUNT];
+
+unsigned long audioMillis;
+unsigned long keyboardMillis;
+uint16_t keyboardLed;
 
 void loop()
 {
@@ -144,6 +147,7 @@ void loop()
                             stripConfig[msgIn.Zone - 1].TheaterChaseActivate = false;
                             stripConfig[msgIn.Zone - 1].RainbowActivate = false;
                             stripConfig[msgIn.Zone - 1].WipeActivate = false;
+                            stripConfig[msgIn.Zone - 1].AudioVisActivate = false;
 
                             stripConfig[msgIn.Zone - 1].StaticColor = Color(msgIn.Color.R, msgIn.Color.G, msgIn.Color.B);
 
@@ -161,6 +165,7 @@ void loop()
                             stripConfig[msgIn.Zone - 1].TheaterChaseActivate = true;
                             stripConfig[msgIn.Zone - 1].RainbowActivate = false;
                             stripConfig[msgIn.Zone - 1].WipeActivate = false;
+                            stripConfig[msgIn.Zone - 1].AudioVisActivate = false;
 
                             stripConfig[msgIn.Zone - 1].TheaterChaseColor = Color(msgIn.Color.R, msgIn.Color.G, msgIn.Color.B);
                             stripConfig[msgIn.Zone - 1].TheaterChaseWait = msgIn.Parameter0;
@@ -175,6 +180,7 @@ void loop()
                             stripConfig[msgIn.Zone - 1].TheaterChaseActivate = false;
                             stripConfig[msgIn.Zone - 1].RainbowActivate = true;
                             stripConfig[msgIn.Zone - 1].WipeActivate = false;
+                            stripConfig[msgIn.Zone - 1].AudioVisActivate = false;
 
                             stripConfig[msgIn.Zone - 1].RainbowWait = msgIn.Parameter0;
                             stripConfig[msgIn.Zone - 1].RainbowCycle = ((param1 & 0x1) == 0x1);
@@ -188,9 +194,22 @@ void loop()
                             stripConfig[msgIn.Zone - 1].TheaterChaseActivate = false;
                             stripConfig[msgIn.Zone - 1].RainbowActivate = false;
                             stripConfig[msgIn.Zone - 1].WipeActivate = true;
+                            stripConfig[msgIn.Zone - 1].AudioVisActivate = false;
 
                             stripConfig[msgIn.Zone - 1].WipeColor = Color(msgIn.Color.R, msgIn.Color.G, msgIn.Color.B);
                             stripConfig[msgIn.Zone - 1].WipeWait = msgIn.Parameter0;
+                            configChanged = true;
+                        }
+                        break;
+                    case 5: //Flash
+                        break;
+                    case 6: //Audio
+                        if (msgIn.Zone > 0 && msgIn.Zone <= STRIP_COUNT){
+                            stripConfig[msgIn.Zone - 1].StaticActivate = false;
+                            stripConfig[msgIn.Zone - 1].TheaterChaseActivate = false;
+                            stripConfig[msgIn.Zone - 1].RainbowActivate = false;
+                            stripConfig[msgIn.Zone - 1].WipeActivate = false;
+                            stripConfig[msgIn.Zone - 1].AudioVisActivate = true;
                             configChanged = true;
                         }
                         break;
@@ -203,6 +222,7 @@ void loop()
                     stripConfig[msgIn.Zone - 1].TheaterChaseActivate = false;
                     stripConfig[msgIn.Zone - 1].RainbowActivate = false;
                     stripConfig[msgIn.Zone - 1].WipeActivate = false;
+                    stripConfig[msgIn.Zone - 1].AudioVisActivate = false;
                     setAllStrips(0, 0, 0);
                     configChanged = true;
                 }
@@ -237,6 +257,20 @@ void loop()
             wipeMillis[stripIndex] = millis();
             colorWipe(strips[stripIndex], wipeCounter[stripIndex], stripConfig[stripIndex].WipeColor);
         }
+        else if (stripConfig[stripIndex].AudioVisActivate)
+        {
+            audioVisualizer(strips[stripIndex], audioCounters[stripIndex]);
+        }
+        
+    }
+
+    if (millis() - keyboardMillis >= 1000){
+        keyboardMillis = millis();
+
+        keyboardLed++;
+        if (keyboardLed >= keyboardStrip.numPixels()){
+            keyboardLed = 0;
+        }
     }
 
     if (configChanged && millis() - saveConfigMillis >= SAVE_CONFIG_EVERY_SECS){
@@ -250,6 +284,57 @@ void loop()
             eeAddress += sizeof(StoreStruct);
         }
     }
+}
+
+
+int decay = 0;
+int decay_check = 0;
+long pre_react = 0;
+long react = 0;
+
+void audioVisualizer(Adafruit_NeoPixel &_strip, int &counter)
+{
+    int audio_input = analogRead(audioPin);
+    if (audio_input > 0){
+        audioMillis = millis();
+        pre_react = ((long)_strip.numPixels() * (long)audio_input) / 255L;
+
+        if (pre_react > react)
+        {
+            react = pre_react;
+        }
+
+        audioRainbow(_strip, counter, 1);
+
+        decay_check++;
+        if (decay_check > decay)
+        {
+            decay_check = 0;
+            if (react > 0)
+                react--;
+        }
+    }
+}
+
+void audioRainbow(Adafruit_NeoPixel &_strip, int &counter, int speed){
+    for(uint16_t i = _strip.numPixels() ; i > 0; i--){
+        if (i < react)
+        {
+            // _strip.setPixelColor(i, Color(0, 0, 255));
+            // _strip.setPixelColor(_strip.numPixels() - i, Color(0, 0, 255));
+            _strip.setPixelColor(i, Wheel(((i * 256 / _strip.numPixels()) + counter) % 256));
+            _strip.setPixelColor(_strip.numPixels() - i, Wheel(((i * 256 / _strip.numPixels()) + counter) % 256));
+        }
+        else 
+        {
+            _strip.setPixelColor(i, 0);
+        }
+    }
+    _strip.show();
+
+    counter = counter - speed; // SPEED OF COLOR WHEEL
+    if (counter < 0)           // RESET COLOR WHEEL
+        counter = 255;
 }
 
 void theaterChase(Adafruit_NeoPixel &_strip, uint16_t &_theaterChaseCounter, uint16_t &_theaterChaseRainbowCycleCounter, uint32_t color, bool rainbow)
