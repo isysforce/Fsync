@@ -22,6 +22,7 @@ enum Command_t : uint8_t
     SetColor,
     SetColorAll,
     SetMode,
+    SetNumLed,
     ClearColor
 };
 
@@ -46,6 +47,8 @@ struct Message_t
 
 struct StoreStruct
 {
+    uint16_t NumLeds;
+
     uint32_t StaticColor;
     bool StaticActivate;
 
@@ -62,6 +65,10 @@ struct StoreStruct
     uint16_t WipeWait;
     bool WipeActivate;
 
+    uint32_t FlashColor;
+    uint16_t FlashWait;
+    bool FlashActivate;
+
     bool AudioVisActivate;
     bool AudioRainbow;
     uint16_t AudioDivide;
@@ -75,7 +82,7 @@ void setup()
     pinMode(audioPin, INPUT);
     msgOut.Magic = MESSAGE_MAGIC;
     Serial.begin(9600);
-    Serial.println("Hello");
+    // Serial.println("Hello");
     uint16_t eeAddress = 0;
 
     for (uint8_t stripIndex = 0; stripIndex < STRIP_COUNT; stripIndex++)
@@ -83,6 +90,8 @@ void setup()
         // EEPROM.put(eeAddress, stripConfig[stripIndex]);
         EEPROM.get(eeAddress, stripConfig[stripIndex]);
         eeAddress += sizeof(StoreStruct);
+
+        strips[stripIndex].updateLength(stripConfig[stripIndex].NumLeds);
     }
 
     for(uint8_t stripIndex = 0; stripIndex < STRIP_COUNT; stripIndex++){
@@ -149,6 +158,15 @@ void loop()
                     stripConfig[msgIn.Zone - 1].WipeActivate = false;
                     stripConfig[msgIn.Zone - 1].AudioVisActivate = false;
                     setAllStrips(0, 0, 0);
+                    configChanged = true;
+                }
+                break;
+            case Command_t::SetNumLed:
+                msgOut.Command = Command_t::ClearColor;
+                if (msgIn.Zone > 0 && msgIn.Zone <= STRIP_COUNT)
+                {
+                    stripConfig[msgIn.Zone - 1].NumLeds = msgIn.Parameter0;
+                    strips[msgIn.Zone - 1].updateLength(stripConfig[msgIn.Zone - 1].NumLeds);
                     configChanged = true;
                 }
                 break;
