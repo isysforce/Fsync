@@ -3,7 +3,7 @@
 
 #define MESSAGE_MAGIC 0xBEEF
 #define STRIP_COUNT 3
-#define SAVE_CONFIG_EVERY_SECS 60
+#define SAVE_CONFIG_EVERY_SECS 10000
 #define audioPin A1
 
 Adafruit_NeoPixel strips[STRIP_COUNT] = {
@@ -16,6 +16,7 @@ enum Command_t : uint8_t
 {
     InvalidMessage = 0,
     InvalidRequest,
+    InvalidParameter,
     Ping,
     Pong,
     SetColor,
@@ -62,6 +63,8 @@ struct StoreStruct
     bool WipeActivate;
 
     bool AudioVisActivate;
+    bool AudioRainbow;
+    uint16_t AudioDivide;
 };
 StoreStruct stripConfig[STRIP_COUNT];
 
@@ -77,6 +80,7 @@ void setup()
 
     for (uint8_t stripIndex = 0; stripIndex < STRIP_COUNT; stripIndex++)
     {
+        // EEPROM.put(eeAddress, stripConfig[stripIndex]);
         EEPROM.get(eeAddress, stripConfig[stripIndex]);
         eeAddress += sizeof(StoreStruct);
     }
@@ -118,104 +122,25 @@ void loop()
                 msgOut.Command = Command_t::Pong;
                 break;
             case Command_t::SetColor:
-
+                msgOut.Command = Command_t::SetColor;
                 if (msgIn.Zone > 0 && msgIn.Zone <= STRIP_COUNT)
                 {
                     strips[msgIn.Zone - 1].setPixelColor(msgIn.Parameter0, msgIn.Color.R, msgIn.Color.G, msgIn.Color.B);
                     strips[msgIn.Zone - 1].show();
                 }
-                msgOut.Command = Command_t::SetColor;
                 break;
             case Command_t::SetColorAll:
+                msgOut.Command = Command_t::SetColorAll;
                 if (msgIn.Zone > 0 && msgIn.Zone <= STRIP_COUNT)
                 {
                     for (uint16_t i = 0; i < strips[msgIn.Zone - 1].numPixels(); i++)
                         strips[msgIn.Zone - 1].setPixelColor(i, msgIn.Color.R, msgIn.Color.G, msgIn.Color.B);
                     strips[msgIn.Zone - 1].show();
                 }
-                msgOut.Command = Command_t::SetColor;
-                break;
-            case Command_t::SetMode:
-                uint8_t mode = (msgIn.Parameter1 >> 8) & 0xff;
-                uint8_t param1 = msgIn.Parameter1 & 0xff;
-                switch(mode){
-                    case 1:
-                        if (msgIn.Zone > 0 && msgIn.Zone <= STRIP_COUNT)
-                        {
-
-                            stripConfig[msgIn.Zone - 1].StaticActivate = true;
-                            stripConfig[msgIn.Zone - 1].TheaterChaseActivate = false;
-                            stripConfig[msgIn.Zone - 1].RainbowActivate = false;
-                            stripConfig[msgIn.Zone - 1].WipeActivate = false;
-                            stripConfig[msgIn.Zone - 1].AudioVisActivate = false;
-
-                            stripConfig[msgIn.Zone - 1].StaticColor = Color(msgIn.Color.R, msgIn.Color.G, msgIn.Color.B);
-
-                            for (uint16_t i = 0; i < strips[msgIn.Zone - 1].numPixels(); i++){
-                                strips[msgIn.Zone - 1].setPixelColor(i, stripConfig[msgIn.Zone - 1].StaticColor);
-                            }
-                            strips[msgIn.Zone - 1].show();
-                            configChanged = true;
-                        }
-                        break;
-                    case 2: //Theater chase
-                        if (msgIn.Zone > 0 && msgIn.Zone <= STRIP_COUNT)
-                        {
-                            stripConfig[msgIn.Zone - 1].StaticActivate = false;
-                            stripConfig[msgIn.Zone - 1].TheaterChaseActivate = true;
-                            stripConfig[msgIn.Zone - 1].RainbowActivate = false;
-                            stripConfig[msgIn.Zone - 1].WipeActivate = false;
-                            stripConfig[msgIn.Zone - 1].AudioVisActivate = false;
-
-                            stripConfig[msgIn.Zone - 1].TheaterChaseColor = Color(msgIn.Color.R, msgIn.Color.G, msgIn.Color.B);
-                            stripConfig[msgIn.Zone - 1].TheaterChaseWait = msgIn.Parameter0;
-                            stripConfig[msgIn.Zone - 1].TheaterChaseRainbow = ((param1 & 0x1) == 0x1);
-                            configChanged = true;
-                        }
-                        break;
-                    case 3: //rainbow
-                        if (msgIn.Zone > 0 && msgIn.Zone <= STRIP_COUNT)
-                        {
-                            stripConfig[msgIn.Zone - 1].StaticActivate = false;
-                            stripConfig[msgIn.Zone - 1].TheaterChaseActivate = false;
-                            stripConfig[msgIn.Zone - 1].RainbowActivate = true;
-                            stripConfig[msgIn.Zone - 1].WipeActivate = false;
-                            stripConfig[msgIn.Zone - 1].AudioVisActivate = false;
-
-                            stripConfig[msgIn.Zone - 1].RainbowWait = msgIn.Parameter0;
-                            stripConfig[msgIn.Zone - 1].RainbowCycle = ((param1 & 0x1) == 0x1);
-                            configChanged = true;
-                        }
-                        break;
-                    case 4:
-                        if (msgIn.Zone > 0 && msgIn.Zone <= STRIP_COUNT)
-                        {
-                            stripConfig[msgIn.Zone - 1].StaticActivate = false;
-                            stripConfig[msgIn.Zone - 1].TheaterChaseActivate = false;
-                            stripConfig[msgIn.Zone - 1].RainbowActivate = false;
-                            stripConfig[msgIn.Zone - 1].WipeActivate = true;
-                            stripConfig[msgIn.Zone - 1].AudioVisActivate = false;
-
-                            stripConfig[msgIn.Zone - 1].WipeColor = Color(msgIn.Color.R, msgIn.Color.G, msgIn.Color.B);
-                            stripConfig[msgIn.Zone - 1].WipeWait = msgIn.Parameter0;
-                            configChanged = true;
-                        }
-                        break;
-                    case 5: //Flash
-                        break;
-                    case 6: //Audio
-                        if (msgIn.Zone > 0 && msgIn.Zone <= STRIP_COUNT){
-                            stripConfig[msgIn.Zone - 1].StaticActivate = false;
-                            stripConfig[msgIn.Zone - 1].TheaterChaseActivate = false;
-                            stripConfig[msgIn.Zone - 1].RainbowActivate = false;
-                            stripConfig[msgIn.Zone - 1].WipeActivate = false;
-                            stripConfig[msgIn.Zone - 1].AudioVisActivate = true;
-                            configChanged = true;
-                        }
-                        break;
-                }
+                
                 break;
             case Command_t::ClearColor:
+                msgOut.Command = Command_t::ClearColor;
                 if (msgIn.Zone > 0 && msgIn.Zone <= STRIP_COUNT)
                 {
                     stripConfig[msgIn.Zone - 1].StaticActivate = false;
@@ -225,6 +150,84 @@ void loop()
                     stripConfig[msgIn.Zone - 1].AudioVisActivate = false;
                     setAllStrips(0, 0, 0);
                     configChanged = true;
+                }
+                break;
+            case Command_t::SetMode:
+                msgOut.Command = Command_t::SetMode;
+                uint8_t mode = (msgIn.Parameter1 >> 8) & 0xff;
+                uint8_t param1 = msgIn.Parameter1 & 0xff;
+                if (msgIn.Zone > 0 && msgIn.Zone <= STRIP_COUNT){
+                    StoreStruct &stripZone = stripConfig[msgIn.Zone - 1];
+                    switch(mode)
+                    {
+                    case 1:
+                        stripZone.StaticActivate = true;
+                        stripZone.TheaterChaseActivate = false;
+                        stripZone.RainbowActivate = false;
+                        stripZone.WipeActivate = false;
+                        stripZone.AudioVisActivate = false;
+
+                        stripZone.StaticColor = Color(msgIn.Color.R, msgIn.Color.G, msgIn.Color.B);
+
+                        for (uint16_t i = 0; i < strips[msgIn.Zone - 1].numPixels(); i++){
+                            strips[msgIn.Zone - 1].setPixelColor(i, stripZone.StaticColor);
+                        }
+                        strips[msgIn.Zone - 1].show();
+                        configChanged = true;
+                        
+                        break;
+                    case 2: //Theater chase
+                        stripZone.StaticActivate = false;
+                        stripZone.TheaterChaseActivate = true;
+                        stripZone.RainbowActivate = false;
+                        stripZone.WipeActivate = false;
+                        stripZone.AudioVisActivate = false;
+
+                        stripZone.TheaterChaseColor = Color(msgIn.Color.R, msgIn.Color.G, msgIn.Color.B);
+                        stripZone.TheaterChaseWait = msgIn.Parameter0;
+                        stripZone.TheaterChaseRainbow = ((param1 & 0x1) == 0x1);
+                        configChanged = true;
+                        break;
+                    case 3: //rainbow
+                        stripZone.StaticActivate = false;
+                        stripZone.TheaterChaseActivate = false;
+                        stripZone.RainbowActivate = true;
+                        stripZone.WipeActivate = false;
+                        stripZone.AudioVisActivate = false;
+
+                        stripZone.RainbowWait = msgIn.Parameter0;
+                        stripZone.RainbowCycle = ((param1 & 0x1) == 0x1);
+                        configChanged = true;
+                        break;
+                    case 4:
+                        stripZone.StaticActivate = false;
+                        stripZone.TheaterChaseActivate = false;
+                        stripZone.RainbowActivate = false;
+                        stripZone.WipeActivate = true;
+                        stripZone.AudioVisActivate = false;
+
+                        stripZone.WipeColor = Color(msgIn.Color.R, msgIn.Color.G, msgIn.Color.B);
+                        stripZone.WipeWait = msgIn.Parameter0;
+                        configChanged = true;
+                        break;
+                    case 5: //Flash
+                        break;
+                    case 6: //Audio
+                        stripZone.StaticActivate = false;
+                        stripZone.TheaterChaseActivate = false;
+                        stripZone.RainbowActivate = false;
+                        stripZone.WipeActivate = false;
+                        stripZone.AudioVisActivate = true;
+
+                        stripZone.AudioDivide = msgIn.Parameter0;
+                        stripZone.AudioRainbow = ((param1 & 0x1) == 0x1);
+
+                        configChanged = true;
+                        break;
+                    default:
+                        msgOut.Command = Command_t::InvalidParameter;
+                        break;
+                    }
                 }
                 break;
             default:
@@ -259,19 +262,19 @@ void loop()
         }
         else if (stripConfig[stripIndex].AudioVisActivate)
         {
-            audioVisualizer(strips[stripIndex], audioCounters[stripIndex]);
+            audioVisualizer(strips[stripIndex], audioCounters[stripIndex], stripConfig[stripIndex].AudioDivide, stripConfig[stripIndex].AudioRainbow);
         }
         
     }
 
-    if (millis() - keyboardMillis >= 1000){
-        keyboardMillis = millis();
+    // if (millis() - keyboardMillis >= 1000){
+    //     keyboardMillis = millis();
 
-        keyboardLed++;
-        if (keyboardLed >= keyboardStrip.numPixels()){
-            keyboardLed = 0;
-        }
-    }
+    //     keyboardLed++;
+    //     if (keyboardLed >= keyboardStrip.numPixels()){
+    //         keyboardLed = 0;
+    //     }
+    // }
 
     if (configChanged && millis() - saveConfigMillis >= SAVE_CONFIG_EVERY_SECS){
         saveConfigMillis = millis();
@@ -291,13 +294,15 @@ int decay = 0;
 int decay_check = 0;
 long pre_react = 0;
 long react = 0;
+// long react_divide = 255L;
+long react_multiply = 0;
 
-void audioVisualizer(Adafruit_NeoPixel &_strip, int &counter)
+void audioVisualizer(Adafruit_NeoPixel &_strip, int &counter, long react_divide, bool rainbow)
 {
     int audio_input = analogRead(audioPin);
     if (audio_input > 0){
         audioMillis = millis();
-        pre_react = ((long)_strip.numPixels() * (long)audio_input) / 255L;
+        pre_react = (_strip.numPixels() * (long)audio_input) / react_divide;
 
         if (pre_react > react)
         {
